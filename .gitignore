@@ -1,2 +1,3 @@
-
 .env
+celo_slack_bot.log
+nohup.out
