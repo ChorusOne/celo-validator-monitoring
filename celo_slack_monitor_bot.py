@@ -11,9 +11,13 @@ import time
 from urllib.error import URLError
 from urllib.request import urlopen
 
-# see https://discordpy.readthedocs.io/en/latest/intro.html
-# installing: python3 -m pip install -U discord.py
-import discord
+import nest_asyncio
+nest_asyncio.apply()
+
+# See: https://github.com/slackapi/python-slackclient
+# Install:
+# pip3 install slackclient
+import slack
 
 OK = 0; VALIDATOR_DOWN = 1; CHAIN_DOWN = 2
 
@@ -23,9 +27,10 @@ validator_threshold = timedelta(minutes = 30)
 chain_threshold = timedelta(minutes = 5)
 check_period_sec = 60
 initial_status = OK
-# see https://discordpy.readthedocs.io/en/latest/discord.html
-discord_bot_token = os.environ.get('CELO_MONITOR_DISCORD_BOT_TOKEN', '...default discord bot token...')
-discord_channel_name = os.environ.get('CELO_MONITOR_DISCORD_CHANNEL', '...default discord channel name...')
+
+client = slack.WebClient(token=os.environ['CELO_MONITOR_SLACK_API_TOKEN'])
+
+slack_channel_name = os.environ.get('CELO_MONITOR_SLACK_CHANNEL_NAME', '...default slack channel name...')
 
 url = 'https://baklava-blockscout.celo-testnet.org/address/%s/validations?type=JSON' % validator_address
 blocks_url = 'https://baklava-blockscout.celo-testnet.org/blocks?type=JSON'
@@ -33,11 +38,11 @@ pattern = re.compile(b'data-from-now=\\\\"(.*?)\\\\"')
 
 logging.basicConfig(level = logging.WARNING,
                     format = '%(asctime)s %(name)-14s %(levelname)-8s %(message)s',
-                    filename = 'celo_discord_bot.log',
+                    filename = 'celo_slack_bot.log',
                     filemode = 'a')
 
-client = discord.Client()
 celo_channel = [None] # access by reference
+celo_channel[0] = slack_channel_name
 
 # from https://stackoverflow.com/questions/538666/format-timedelta-to-string
 def td_format(td_object):
@@ -107,21 +112,28 @@ def get_last_block_time():
     else:
         return datetime.min
 
-# from https://github.com/Rapptz/discord.py/blob/async/examples/background_task.py
+def postSlackMessage(message):
+    client.chat_postMessage(
+        channel=slack_channel_name,
+        text=message)
+    logging.info('Posted message to Slack')
+    return
+
 async def background_task():
-    await client.wait_until_ready()
+    postSlackMessage("Starting Celo Monitor...")
     
     status = initial_status
-    
-    #while not client.is_closed:
+
+    # Run until it crashes:
     while True:
         if celo_channel[0] is not None:
             last_validated_time = get_last_validated_time()
             last_block_time = get_last_block_time()
             if last_validated_time is None or last_block_time is None:
                 logging.warning('cannot probe Celo network status')
-                await celo_channel[0].send('[??] cannot probe Celo network status. maybe baklava-blockscout.celo-testnet.org is down.')
-                await asyncio.sleep(check_period_sec)
+                # Seems to happen a lot, ignore:
+                # postSlackMessage('[???] cannot probe Celo network status. Maybe baklava-blockscout.celo-testnet.org is down.')
+                time.sleep(check_period_sec)
                 continue
             
             logging.debug('loop - last validated time %s', last_validated_time)
@@ -129,40 +141,31 @@ async def background_task():
             if status == CHAIN_DOWN:
                 if now - last_validated_time <= min(chain_threshold, validator_threshold):
                     logging.debug('ok')
-                    await celo_channel[0].send('[OK] Celo network got to work.')
+                    postSlackMessage('[OK] Celo network got to work.')
                     status = OK
                 elif now - last_block_time <= chain_threshold:
                     logging.debug('alert')
-                    await celo_channel[0].send('[Alerting] Celo network got to work but %s Celo validator has not produced any blocks yet.' % validator_name)
+                    postSlackMessage('[Alerting] Celo network got to work but %s Celo validator has not produced any blocks yet.' % validator_name)
                     status = VALIDATOR_DOWN
             elif status == VALIDATOR_DOWN:
                 if now - last_block_time > chain_threshold:
                     logging.debug('chain down')
-                    await celo_channel[0].send('[Chain stopped] Celo network has been stopped, too.')
+                    postSlackMessage('[Chain stopped] Celo network has been stopped, too.')
                     status = CHAIN_DOWN
                 elif now - last_validated_time <= validator_threshold:
                     logging.debug('ok')
-                    await celo_channel[0].send('[OK] %s Celo validator has restored to producing blocks.' % validator_name)
+                    postSlackMessage('[OK] %s Celo validator has restored to producing blocks.' % validator_name)
                     status = OK
             elif status == OK:
                 if now - last_block_time > chain_threshold:
                     logging.debug('chain down')
-                    await celo_channel[0].send('[Chain stopped] Celo network has been stopped last %s.' % td_format(chain_threshold))
+                    postSlackMessage('[Chain Stopped] Celo network has been stopped last %s.' % td_format(chain_threshold))
                     status = CHAIN_DOWN
                 elif now - last_validated_time > validator_threshold:
                     logging.debug('alert')
-                    await celo_channel[0].send('[Alerting] %s Celo validator has not produced any blocks last %s.' % (validator_name, td_format(validator_threshold)))
+                    postSlackMessage('[Alerting] %s Celo validator has not produced any blocks last %s.' % (validator_name, td_format(validator_threshold)))
                     status = VALIDATOR_DOWN
-        await asyncio.sleep(check_period_sec)
+        time.sleep(check_period_sec)
     logging.warning('background_task() exit')
 
-@client.event
-async def on_ready():
-    logging.info('We have logged in as {0.user}'.format(client))
-    for channel in client.get_all_channels():
-        if channel.name == discord_channel_name:
-            celo_channel[0] = channel
-
-client.loop.create_task(background_task())
-client.run(discord_bot_token)
-
+asyncio.run(background_task())
