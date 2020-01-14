@@ -119,9 +119,7 @@ def postSlackMessage(message):
     logging.info('Posted message to Slack')
     return
 
-async def background_task():
-    postSlackMessage("Starting Celo Monitor...")
-    
+async def monitor():
     status = initial_status
 
     # Run until it crashes:
@@ -166,6 +164,14 @@ async def background_task():
                     postSlackMessage('[Alerting] %s Celo validator has not produced any blocks last %s.' % (validator_name, td_format(validator_threshold)))
                     status = VALIDATOR_DOWN
         time.sleep(check_period_sec)
-    logging.warning('background_task() exit')
+    logging.warning('monitor() exit')
 
-asyncio.run(background_task())
+
+def main():
+    try:
+        postSlackMessage("Celo Slack Bot online!")
+        asyncio.run(monitor())
+    finally:
+        postSlackMessage("Celo Slack Bot blew up!")
+
+main()
